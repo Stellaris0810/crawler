@@ -1,115 +1,116 @@
-import cloudscraper
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 import time
 import random
 
-def get_chapter_list(scraper, index_url):
-    """從目錄頁抓取所有章節的完整網址"""
-    print("正在讀取目錄，請稍候...")
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Referer': 'https://www.oop.tw/'
-    }
+def get_chapter_ids_with_selenium(index_url):
+    """使用 Selenium 模擬瀏覽器點擊目錄分頁"""
+    chrome_options = Options()
+    # 如果想看瀏覽器跑，註解掉下面這行；如果不想看視窗，就留著
+    # chrome_options.add_argument("--headless") 
+    
+    driver = webdriver.Chrome(options=chrome_options)
+    all_chapter_ids = []
+    
     try:
-        response = scraper.get(index_url, headers=headers)
-        response.encoding = 'utf-8'
-        soup = BeautifulSoup(response.text, 'html.parser')
+        driver.get(index_url)
+        print("請注意：如果出現機器人驗證，請手動在瀏覽器視窗點選驗證...")
         
-        links = []
-        # 該網站的目錄通常放在 <div id="list"> 裡面的 <dd> 標籤
-        list_box = soup.find('div', id='list')
-        if not list_box:
-            # 如果找不到 id='list'，就抓取頁面所有 <a>
-            list_box = soup
+        # 等待目錄區塊載入
+        wait = WebDriverWait(driver, 20)
+        wait.until(EC.presence_of_element_located((By.ID, "tab-catalog")))
 
-        for a in list_box.find_all('a', href=True):
-            href = a['href']
-            # 觀察該網站連結格式通常為 'a' + 數字 + 'a.html'
-            # 例如: a2147072a.html
-            if 'html' in href and '_' not in href:
-                # 提取中間的數字 ID
-                # 這裡改為提取檔名，不純抓數字，避免 ID 前後的 'a' 影響
-                parts = href.split('/')[-1].replace('.html', '')
-                # 移除頭尾可能存在的 'a'
-                c_id = parts.strip('a')
-                if c_id.isdigit():
-                    links.append(c_id)
+        # 找到所有的 cp-btn (目錄分頁按鈕)
+        btns = driver.find_elements(By.CLASS_NAME, "cp-btn")
+        btn_count = len(btns) if btns else 1
+        print(f"發現 {btn_count} 個目錄分頁按鈕。")
+
+        for i in range(btn_count):
+            print(f"正在讀取第 {i+1} 個分頁...")
+            
+            # 重新獲取按鈕以避免頁面更新導致的失效
+            current_btns = driver.find_elements(By.CLASS_NAME, "cp-btn")
+            if current_btns:
+                # 捲動到按鈕位置並點擊
+                driver.execute_script("arguments[0].scrollIntoView();", current_btns[i])
+                time.sleep(1)
+                driver.execute_script("arguments[0].click();", current_btns[i])
+                time.sleep(3) # 等待內容異步載入
+
+            # 抓取當前頁面的 HTML
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            catalog_box = soup.find(id='tab-catalog')
+            
+            if catalog_box:
+                for a in catalog_box.find_all('a', href=True):
+                    href = a['href']
+                    if 'html' in href and '_' not in href:
+                        c_id = href.split('/')[-1].replace('.html', '').strip('a')
+                        if c_id.isdigit() and c_id not in all_chapter_ids:
+                            all_chapter_ids.append(c_id)
         
-        # 去除重複項並保持順序
-        unique_links = []
-        for x in links:
-            if x not in unique_links:
-                unique_links.append(x)
-                
-        print(f"成功分析目錄！共找到 {len(unique_links)} 個章節。")
-        return unique_links
+        print(f"成功依序抓取 {len(all_chapter_ids)} 個章節 ID。")
+        return all_chapter_ids
+
     except Exception as e:
-        print(f"讀取目錄失敗: {e}")
+        print(f"Selenium 執行錯誤: {e}")
         return []
+    finally:
+        driver.quit()
 
+# 這裡共用先前的 fetch_content 函數，但改用 cloudscraper 抓內文以節省效能
+import cloudscraper
 def fetch_content(scraper, url):
-    """抓取內文邏輯"""
     try:
-        response = scraper.get(url, timeout=15)
-        response.encoding = 'utf-8'
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            article = soup.find(id='article')
-            if article:
-                for s in article(['script', 'style', 'div']): s.decompose()
-                return article.get_text(separator='\n', strip=True)
-    except:
-        pass
+        res = scraper.get(url, timeout=10)
+        res.encoding = 'utf-8'
+        soup = BeautifulSoup(res.text, 'html.parser')
+        article = soup.find(id='article')
+        if article:
+            for s in article(['script', 'style', 'div']): s.decompose()
+            return article.get_text(separator='\n', strip=True)
+    except: pass
     return ""
 
 def main():
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome','platform': 'windows','desktop': True})
-    
     index_url = "https://www.oop.tw/abooka/a31537152a/"
-    chapter_ids = get_chapter_list(scraper, index_url)
+    
+    # 1. 先用 Selenium 拿目錄
+    chapter_ids = get_chapter_ids_with_selenium(index_url)
     
     if not chapter_ids:
-        print("未找到任何章節，請檢查目錄網址。")
+        print("終止程式：無法取得目錄。")
         return
 
-    # 設定爬取範圍 (例如從第 1 章爬到第 10 章)
-    start_at = 0 
-    end_at = 10 
-    chapters_to_crawl = chapter_ids[start_at:end_at]
-    
+    # 2. 開始爬內容
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome','desktop': True})
     all_content = []
-    save_count = 5 # 每 5 章存一檔
-
-    for i, c_id in enumerate(chapters_to_crawl):
-        real_index = start_at + i + 1
-        print(f"進度: {real_index}/{len(chapter_ids)} - 正在爬取 ID: {c_id}")
+    
+    for i, c_id in enumerate(chapter_ids):
+        # 為了測試，你可以先爬前 5 章試試看
+        if i >= 10: break 
         
-        # 組合第一頁與第二頁網址
+        print(f"[{i+1}/{len(chapter_ids)}] 抓取中: {c_id}")
         p1 = f"https://www.oop.tw/areada/a31537152a/a{c_id}a.html"
         p2 = f"https://www.oop.tw/areada/a31537152a/a{c_id}_2a.html"
         
-        text1 = fetch_content(scraper, p1)
-        time.sleep(random.uniform(1, 2))
-        text2 = fetch_content(scraper, p2)
+        t1 = fetch_content(scraper, p1)
+        time.sleep(1)
+        t2 = fetch_content(scraper, p2)
         
-        combined = f"\n\n### 第 {real_index} 章 (ID: {c_id}) ###\n\n{text1}\n{text2}\n"
-        all_content.append(combined)
+        all_content.append(f"\n第 {i+1} 章\n{t1}\n{t2}\n")
         
-        # 每 5 章存檔
-        if len(all_content) == save_count:
-            file_name = f"novel_part_{real_index // save_count}.txt"
-            with open(file_name, "w", encoding="utf-8") as f:
+        if len(all_content) == 5:
+            with open(f"novel_{i//5}.txt", "w", encoding="utf-8") as f:
                 f.writelines(all_content)
-            print(f"==> 已儲存: {file_name}")
             all_content = []
-            
+        
         time.sleep(random.uniform(2, 4))
-
-    # 處理剩餘章節
-    if all_content:
-        with open("novel_part_final.txt", "w", encoding="utf-8") as f:
-            f.writelines(all_content)
-        print("==> 剩餘章節已儲存。")
 
 if __name__ == "__main__":
     main()
+    
